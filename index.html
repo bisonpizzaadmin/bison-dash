@@ -6,58 +6,30 @@
 <meta name="robots" content="noindex, nofollow">
 <title>Bison Dashboard</title>
 <style>
-  :root { --bg:#f6f4f0; --card:#fff; --ink:#1d1b18; --mut:#6b665e; --line:#ddd6cb; --acc:#b4461e; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#161412; --card:#221f1b; --ink:#f1ede6; --mut:#a49d92; --line:#3a352f; --acc:#e0703f; } }
-  * { box-sizing:border-box; }
-  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--ink);
-         font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:16px; }
-  .card { width:100%; max-width:360px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:24px; }
-  h1 { font-size:20px; margin:0 0 4px; }
-  p { margin:0 0 18px; color:var(--mut); font-size:14px; }
-  input { width:100%; font-size:16px; padding:12px; margin:0 0 10px; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--ink); }
-  button { width:100%; font-size:16px; padding:12px; border:0; border-radius:10px; background:var(--acc); color:#fff; font-weight:600; }
-  button:disabled { opacity:.6; }
-  #msg { min-height:20px; margin-top:12px; font-size:14px; color:var(--mut); }
+  :root { --bg:#f6f4f0; --ink:#1d1b18; --mut:#6b665e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161412; --ink:#f1ede6; --mut:#a49d92; } }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--mut);
+         font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:16px; text-align:center; }
   #msg.bad { color:#c62828; }
 </style>
 </head>
 <body>
-<form class="card" id="f" autocomplete="on">
-  <h1>🍕 Bison Dashboard</h1>
-  <p>Owners only</p>
-  <input id="u" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Username" required>
-  <input id="p" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
-  <button id="go" type="submit">Log in</button>
-  <div id="msg"></div>
-</form>
+<div id="msg">🍕 Loading Bison Dashboard…</div>
 <script>
+/* Bison Dashboard host page (Oct 19, 2026). Loads the Apps Script dashboard through DashApi.gs (doPost) without Google cookies,
+   so it works whatever Google account the phone uses. Login = the dashboard's own Bison Portal login (Portal.gs). */
 const API = 'https://script.google.com/macros/s/AKfycbzjO4KPFIGeaoPxCzNmIa8eRTbg7w_pgRmw6c6ILhVeTBsb31tGDl3J6oo2eZICsbFSBw/exec';   // Web app URL from Apps Script: ends in /exec, nothing after it
-const TK = 'bisonDashToken';
-let memTok = null;
 
-function tokGet() { try { return localStorage.getItem(TK) || memTok; } catch (e) { return memTok; } }
-function tokSet(v) { memTok = v; try { if (v) localStorage.setItem(TK, v); else localStorage.removeItem(TK); } catch (e) {} }
-function say(t, bad) { const m = document.getElementById('msg'); if (!m) return; m.textContent = t || ''; m.className = bad ? 'bad' : ''; }
+function say(t, bad) { const m = document.getElementById('msg'); if (!m) return; m.textContent = t; m.className = bad ? 'bad' : ''; }
 
-async function api(body) {
-  let r;
-  try {
-    r = await fetch(API, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      credentials: 'omit', redirect: 'follow' });
-  } catch (e) { throw new Error('No connection to the server.'); }
-  const txt = await r.text();
-  try { return JSON.parse(txt); } catch (e) { throw new Error('Server did not answer. Check the web app URL and that a New version is deployed.'); }
-}
-
-/* Runs inside the dashboard page: replaces google.script.run with fetch calls to the web app. */
-function bisonShim(API, TOK, TK) {
+/* Runs inside the dashboard page: replaces google.script.run with fetch calls to DashApi.gs. */
+function bisonShim(API) {
   function call(f, args) {
-    return fetch(API, { method: 'POST', body: JSON.stringify({ a: 'call', t: TOK, f: f, args: args }),
+    return fetch(API, { method: 'POST', body: JSON.stringify({ a: 'call', f: f, args: args }),
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, credentials: 'omit', redirect: 'follow' })
-      .then(function (r) { return r.text(); })
+      .then(function (r) { return r.text(); }, function () { throw new Error('No connection to the server.'); })
       .then(function (txt) {
         let j; try { j = JSON.parse(txt); } catch (e) { throw new Error('Server did not answer'); }
-        if (j.auth) { try { localStorage.removeItem(TK); } catch (e) {} location.reload(); throw new Error(j.err || 'Please log in again'); }
         if (!j.ok) throw new Error(j.err || 'error');
         return j.r;
       });
@@ -83,39 +55,22 @@ function bisonShim(API, TOK, TK) {
   };
 }
 
-async function openDash(t) {
-  say('Loading dashboard…');
+async function start() {
+  if (API.indexOf('/exec') < 0) { say('Setup: paste the web app URL into API at the top of index.html.', true); return; }
   let j;
-  try { j = await api({ a: 'page', t: t }); } catch (e) { say(e.message, true); return; }
-  if (j.auth) { tokSet(null); say('Please log in again.', true); return; }
-  if (!j.ok) { say(j.err || 'Could not load.', true); return; }
+  try {
+    const r = await fetch(API, { method: 'POST', body: JSON.stringify({ a: 'page' }),
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, credentials: 'omit', redirect: 'follow' });
+    j = JSON.parse(await r.text());
+  } catch (e) { say('Server did not answer. Check the web app URL and that a New version is deployed.', true); return; }
+  if (!j.ok) { say(j.err || 'Could not load the dashboard.', true); return; }
   const shim = '<meta name="viewport" content="width=device-width, initial-scale=1"><script>(' + bisonShim.toString() + ')(' +
-    JSON.stringify(API) + ',' + JSON.stringify(t) + ',' + JSON.stringify(TK) + ');<\/script>';
+    JSON.stringify(API) + ');<\/script>';
   let html = String(j.html);
   html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, function (m) { return m + shim; }) : shim + html;
   document.open(); document.write(html); document.close();
 }
-
-document.getElementById('f').addEventListener('submit', async function (ev) {
-  ev.preventDefault();
-  const b = document.getElementById('go'); b.disabled = true; say('Checking…');
-  try {
-    const j = await api({ a: 'login', u: document.getElementById('u').value, p: document.getElementById('p').value });
-    if (!j.ok) { say(j.err || 'Login failed.', true); return; }
-    tokSet(j.t);
-    await openDash(j.t);
-  } catch (e) { say(e.message, true); } finally { b.disabled = false; }
-});
-
-if (location.hash === '#logout') {
-  const t = tokGet(); tokSet(null); history.replaceState(null, '', location.pathname);
-  if (t) api({ a: 'logout', t: t }).catch(function () {});
-  say('Logged out.');
-} else if (API.indexOf('/exec') < 0) {
-  say('Setup: paste the web app URL into API at the top of index.html.', true);
-} else {
-  const t = tokGet(); if (t) openDash(t);
-}
+start();
 </script>
 </body>
 </html>
