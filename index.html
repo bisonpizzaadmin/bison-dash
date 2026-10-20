@@ -16,24 +16,51 @@
 <body>
 <div id="msg">🍕 Loading Bison Dashboard…</div>
 <script>
-/* Bison Dashboard host page (Oct 19, 2026). Loads the Apps Script dashboard through DashApi.gs (doPost) without Google cookies,
-   so it works whatever Google account the phone uses. Login = the dashboard's own Bison Portal login (Portal.gs). */
-const API = 'https://script.google.com/macros/s/AKfycbzjO4KPFIGeaoPxCzNmIa8eRTbg7w_pgRmw6c6ILhVeTBsb31tGDl3J6oo2eZICsbFSBw/exec';   // Web app URL from Apps Script: ends in /exec, nothing after it
+/* Bison Dashboard host page (Oct 19, 2026; fast version Oct 19 late).
+   Talks to the Cloudflare Worker first (fast, keeps ready-made views), and straight to Apps Script (DashApi.gs) only if the
+   Worker can't be reached. Login = the dashboard's own Bison Portal login (Portal.gs).
+   Speed on the phone: the page itself and the last numbers of Overview / P&L / Inventory / Channel split / Expenses are kept
+   on this device, shown at once, then refreshed quietly. Logging out clears them. */
+const API = 'https://bison-dash.bisonpizzaadmin.workers.dev';   // Cloudflare Worker address (Worker → its page, top right)
+const GAS = 'https://script.google.com/macros/s/AKfycbzjO4KPFIGeaoPxCzNmIa8eRTbg7w_pgRmw6c6ILhVeTBsb31tGDl3J6oo2eZICsbFSBw/exec';   // Apps Script web app (fallback)
+const PAGE_KEY = 'bisonPage';
 
 function say(t, bad) { const m = document.getElementById('msg'); if (!m) return; m.textContent = t; m.className = bad ? 'bad' : ''; }
 
-/* Runs inside the dashboard page: replaces google.script.run with fetch calls to DashApi.gs. */
-function bisonShim(API) {
-  function call(f, args) {
-    return fetch(API, { method: 'POST', body: JSON.stringify({ a: 'call', f: f, args: args }),
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, credentials: 'omit', redirect: 'follow' })
-      .then(function (r) { return r.text(); }, function () { throw new Error('No connection to the server.'); })
-      .then(function (txt) {
-        let j; try { j = JSON.parse(txt); } catch (e) { throw new Error('Server did not answer'); }
-        if (!j.ok) throw new Error(j.err || 'error');
-        return j.r;
-      });
+/* Runs inside the dashboard page: replaces google.script.run with fetch calls (Worker first, Apps Script if it can't be reached). */
+function bisonShim(CFG) {
+  var URLS = CFG.api ? [CFG.api, CFG.gas] : [CFG.gas];
+  var SWR = { dashData: 1, finChan: 1, plnData: 1, invdData: 1, expData: 1 };   // shown from the phone first, then refreshed
+  var IDX = 'bswrIdx', MAX = 20;
+  function post(i, body) {
+    return fetch(URLS[i], { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, credentials: 'omit', redirect: 'follow' })
+      .then(function (r) { return r.text(); })
+      .then(function (txt) { var j; try { j = JSON.parse(txt); } catch (e) { throw { net: true }; } return j; },
+            function () { throw { net: true }; })
+      .catch(function (e) { if (e && e.net && i + 1 < URLS.length) return post(i + 1, body); if (e && e.net) throw new Error('No connection to the server.'); throw e; });
   }
+  function call(f, args) {
+    return post(0, JSON.stringify({ a: 'call', f: f, args: args })).then(function (j) { if (!j.ok) throw new Error(j.err || 'error'); return j.r; });
+  }
+  /* ---- last numbers kept on this phone ---- */
+  function ck(f, args) { var a = args.slice(1); while (a.length && typeof a[a.length - 1] === 'boolean') a.pop(); return 'bswr:' + f + ':' + JSON.stringify(a); }
+  function idx() { try { return JSON.parse(localStorage.getItem(IDX) || '[]'); } catch (e) { return []; } }
+  function lsGet(k) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+  function lsPut(k, r) {
+    var val; try { val = JSON.stringify({ r: r, t: Date.now() }); } catch (e) { return; }
+    for (var tries = 0; tries < 3; tries++) {
+      try {
+        localStorage.setItem(k, val);
+        var L = idx().filter(function (x) { return x !== k; }); L.push(k);
+        while (L.length > MAX) { try { localStorage.removeItem(L.shift()); } catch (e) { } }
+        localStorage.setItem(IDX, JSON.stringify(L)); return;
+      } catch (e) {   // phone storage full: drop the oldest half and try again
+        var L2 = idx(); L2.slice(0, Math.ceil(L2.length / 2)).forEach(function (x) { try { localStorage.removeItem(x); } catch (e2) { } });
+        try { localStorage.setItem(IDX, JSON.stringify(L2.slice(Math.ceil(L2.length / 2)))); } catch (e3) { }
+      }
+    }
+  }
+  function lsClear() { idx().forEach(function (x) { try { localStorage.removeItem(x); } catch (e) { } }); try { localStorage.removeItem(IDX); } catch (e) { } }
   function runner(ok, fail, uo) {
     return new Proxy({}, { get: function (_, name) {
       if (typeof name !== 'string' || name === 'then') return undefined;
@@ -41,7 +68,16 @@ function bisonShim(API) {
       if (name === 'withFailureHandler') return function (fn) { return runner(ok, fn, uo); };
       if (name === 'withUserObject') return function (o) { return runner(ok, fail, o); };
       return function () {
-        const args = Array.prototype.slice.call(arguments);
+        var args = Array.prototype.slice.call(arguments);
+        if (name === 'psLogout' || name === 'psLogin') lsClear();
+        var force = args.length > 0 && args[args.length - 1] === true;
+        if (SWR[name]) {
+          var k = ck(name, args), c = force ? null : lsGet(k);
+          if (c) { try { if (ok) ok(c.r, uo); } catch (e) { console.error(e); } }
+          call(name, args).then(function (r) { lsPut(k, r); if (!c || c.r !== r) { if (ok) ok(r, uo); } },
+            function (e) { if (!c) { if (fail) fail(e, uo); else console.error(e); } });
+          return;
+        }
         call(name, args).then(function (r) { if (ok) ok(r, uo); }, function (e) { if (fail) fail(e, uo); else console.error(e); });
       };
     } });
@@ -53,22 +89,37 @@ function bisonShim(API) {
     url: { getLocation: function (cb) { cb({ hash: '', parameter: {}, parameters: {} }); } },
     history: { push: function () {}, replace: function () {}, setChangeHandler: function () {} }
   };
+  /* keep the page itself on the phone: after it opens, fetch the newest page quietly for next time */
+  setTimeout(function () {
+    post(0, JSON.stringify({ a: 'page' })).then(function (j) { if (j && j.ok && j.html) { try { localStorage.setItem(CFG.pageKey, j.html); } catch (e) { } } }, function () {});
+  }, 4000);
+}
+
+function show(html) {
+  const cfg = { api: API.indexOf('YOUR-SUBDOMAIN') < 0 ? API : '', gas: GAS, pageKey: PAGE_KEY };
+  const shim = '<meta name="viewport" content="width=device-width, initial-scale=1"><script>(' + bisonShim.toString() + ')(' +
+    JSON.stringify(cfg) + ');<\/script>';
+  html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, function (m) { return m + shim; }) : shim + html;
+  document.open(); document.write(html); document.close();
 }
 
 async function start() {
-  if (API.indexOf('/exec') < 0) { say('Setup: paste the web app URL into API at the top of index.html.', true); return; }
-  let j;
-  try {
-    const r = await fetch(API, { method: 'POST', body: JSON.stringify({ a: 'page' }),
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, credentials: 'omit', redirect: 'follow' });
-    j = JSON.parse(await r.text());
-  } catch (e) { say('Server did not answer. Check the web app URL and that a New version is deployed.', true); return; }
-  if (!j.ok) { say(j.err || 'Could not load the dashboard.', true); return; }
-  const shim = '<meta name="viewport" content="width=device-width, initial-scale=1"><script>(' + bisonShim.toString() + ')(' +
-    JSON.stringify(API) + ');<\/script>';
-  let html = String(j.html);
-  html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, function (m) { return m + shim; }) : shim + html;
-  document.open(); document.write(html); document.close();
+  let kept = null;
+  try { kept = localStorage.getItem(PAGE_KEY); } catch (e) { }
+  if (kept) { show(kept); return; }   // instant; the newest page is fetched in the background for next time
+  const urls = API.indexOf('YOUR-SUBDOMAIN') < 0 ? [API, GAS] : [GAS];
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      const r = await fetch(urls[i], { method: 'POST', body: JSON.stringify({ a: 'page' }),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, credentials: 'omit', redirect: 'follow' });
+      const j = JSON.parse(await r.text());
+      if (!j.ok) { say(j.err || 'Could not load the dashboard.', true); return; }
+      try { localStorage.setItem(PAGE_KEY, String(j.html)); } catch (e) { }
+      show(String(j.html));
+      return;
+    } catch (e) { }
+  }
+  say('Server did not answer. Check the Worker / web app address and that a New version is deployed.', true);
 }
 start();
 </script>
