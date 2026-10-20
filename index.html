@@ -21,7 +21,7 @@
    Worker can't be reached. Login = the dashboard's own Bison Portal login (Portal.gs).
    Speed on the phone: the page itself and the last numbers of Overview / P&L / Inventory / Channel split / Expenses are kept
    on this device, shown at once, then refreshed quietly. Logging out clears them. */
-const API = 'https://bison-dash.bisonpizzaadmin.workers.dev';   // Cloudflare Worker address (Worker → its page, top right)
+const API = 'https://bison-dash.bisonpizzaadmin.workers.dev';   // Cloudflare Worker address
 const GAS = 'https://script.google.com/macros/s/AKfycbzjO4KPFIGeaoPxCzNmIa8eRTbg7w_pgRmw6c6ILhVeTBsb31tGDl3J6oo2eZICsbFSBw/exec';   // Apps Script web app (fallback)
 const PAGE_KEY = 'bisonPage';
 
@@ -106,7 +106,13 @@ function show(html) {
 async function start() {
   let kept = null;
   try { kept = localStorage.getItem(PAGE_KEY); } catch (e) { }
-  if (kept) { show(kept); return; }   // instant; the newest page is fetched in the background for next time
+  if (kept) {   // instant; the newest page is fetched in the background for next time.
+    // Oct 19 fix: wait until this starter page has finished loading - writing the dashboard while it is still loading puts it
+    // INSIDE the starter page (its centring styles squeeze the dashboard to one side).
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(function () { show(kept); }, 0); });
+    else setTimeout(function () { show(kept); }, 0);
+    return;
+  }
   const urls = API.indexOf('YOUR-SUBDOMAIN') < 0 ? [API, GAS] : [GAS];
   for (let i = 0; i < urls.length; i++) {
     try {
