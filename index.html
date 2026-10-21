@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<link rel="preconnect" href="https://bison-dash.bisonpizzaadmin.workers.dev" crossorigin>
 <title>Bison Dashboard</title>
 <style>
   :root { --bg:#f6f4f0; --ink:#1d1b18; --mut:#6b665e; }
@@ -16,7 +17,8 @@
 <body>
 <div id="msg">🍕 Loading Bison Dashboard…</div>
 <script>
-/* Bison Dashboard host page (Oct 19, 2026; fast version Oct 19 late).
+/* Bison Dashboard host page (Oct 19, 2026; fast version Oct 19 late; Oct 20: today's business date worked out on the phone,
+   speed meter = add #speed to the address).
    Talks to the Cloudflare Worker first (fast, keeps ready-made views), and straight to Apps Script (DashApi.gs) only if the
    Worker can't be reached. Login = the dashboard's own Bison Portal login (Portal.gs).
    Speed on the phone: the page itself and the last numbers of Overview / P&L / Inventory / Channel split / Expenses are kept
@@ -32,15 +34,29 @@ function bisonShim(CFG) {
   var URLS = CFG.api ? [CFG.api, CFG.gas] : [CFG.gas];
   var SWR = { dashData: 1, finChan: 1, plnData: 1, invdData: 1, expData: 1 };   // shown from the phone first, then refreshed
   var IDX = 'bswrIdx', MAX = 20;
-  function post(i, body) {
+  /* ---- speed meter (Oct 20): open the dashboard with #speed at the end of the address to see every call's time ---- */
+  var SPEED = /speed/.test(location.hash + location.search), LOG = [];
+  function meter(f, ms, src) {
+    if (!SPEED) return;
+    LOG.unshift({ f: f, ms: ms, src: src, t: new Date().toLocaleTimeString() }); LOG = LOG.slice(0, 14);
+    var el = document.getElementById('bzSpeed');
+    if (!el) { el = document.createElement('div'); el.id = 'bzSpeed';
+      el.style.cssText = 'position:fixed;top:8px;right:8px;z-index:99;background:rgba(20,10,6,.9);color:#FBF3E9;font:12px/1.5 monospace;padding:8px 10px;border-radius:12px;max-width:92vw;pointer-events:none';
+      document.body.appendChild(el); }
+    el.innerHTML = '<b>⚡ speed</b><br>' + LOG.map(function (x) {
+      var c = x.ms < 700 ? '#5BBE7C' : x.ms < 2500 ? '#FFB259' : '#F2765F';
+      return '<span style="color:' + c + '">' + String(x.ms).padStart(5, ' ') + ' ms</span> ' + x.f + ' <i>' + x.src + '</i>'; }).join('<br>');
+  }
+  function post(i, body, f) {
+    var t0 = Date.now(), src = i === 0 && CFG.api ? 'worker' : 'apps script';
     return fetch(URLS[i], { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, credentials: 'omit', redirect: 'follow' })
-      .then(function (r) { return r.text(); })
+      .then(function (r) { var h = r.headers.get('X-Cache'); var p = r.text(); p.then(function () { meter(f || 'page', Date.now() - t0, src + (h ? ' ' + h : '')); }); return p; })
       .then(function (txt) { var j; try { j = JSON.parse(txt); } catch (e) { throw { net: true }; } return j; },
             function () { throw { net: true }; })
-      .catch(function (e) { if (e && e.net && i + 1 < URLS.length) return post(i + 1, body); if (e && e.net) throw new Error('No connection to the server.'); throw e; });
+      .catch(function (e) { if (e && e.net && i + 1 < URLS.length) return post(i + 1, body, f); if (e && e.net) throw new Error('No connection to the server.'); throw e; });
   }
   function call(f, args) {
-    return post(0, JSON.stringify({ a: 'call', f: f, args: args })).then(function (j) { if (!j.ok) throw new Error(j.err || 'error'); return j.r; });
+    return post(0, JSON.stringify({ a: 'call', f: f, args: args }), f).then(function (j) { if (!j.ok) throw new Error(j.err || 'error'); return j.r; });
   }
   /* ---- last numbers kept on this phone ---- */
   function ck(f, args) { var a = args.slice(1); while (a.length && typeof a[a.length - 1] === 'boolean') a.pop(); return 'bswr:' + f + ':' + JSON.stringify(a); }
@@ -73,7 +89,7 @@ function bisonShim(CFG) {
         var force = args.length > 0 && args[args.length - 1] === true;
         if (SWR[name]) {
           var k = ck(name, args), c = force ? null : lsGet(k);
-          if (c) { try { if (ok) ok(c.r, uo); } catch (e) { console.error(e); } }
+          if (c) { meter(name, 0, 'phone'); try { if (ok) ok(c.r, uo); } catch (e) { console.error(e); } }
           call(name, args).then(function (r) { lsPut(k, r); if (!c || c.r !== r) { if (ok) ok(r, uo); } },
             function (e) { if (!c) { if (fail) fail(e, uo); else console.error(e); } });
           return;
@@ -95,8 +111,21 @@ function bisonShim(CFG) {
   }, 4000);
 }
 
+/* Oct 20: the last finished business day (4 AM–4 AM, Winnipeg) worked out on the phone, so a kept page never asks for old dates. */
+function lastBizDay() {
+  try {
+    const p = {}; new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Winnipeg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date()).forEach(function (x) { p[x.type] = x.value; });
+    const d = new Date(Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day)));
+    d.setUTCDate(d.getUTCDate() - (Number(p.hour) < 4 ? 2 : 1));
+    return d.toISOString().slice(0, 10);
+  } catch (e) { return ''; }
+}
+
 function show(html) {
   const cfg = { api: API.indexOf('YOUR-SUBDOMAIN') < 0 ? API : '', gas: GAS, pageKey: PAGE_KEY };
+  const last = lastBizDay();
+  if (last) html = html.replace(/LAST="\d{4}-\d{2}-\d{2}"/, 'LAST="' + last + '"');
   const shim = '<meta name="viewport" content="width=device-width, initial-scale=1"><script>(' + bisonShim.toString() + ')(' +
     JSON.stringify(cfg) + ');<\/script>';
   html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, function (m) { return m + shim; }) : shim + html;
