@@ -18,7 +18,7 @@
 <div id="msg">🍕 Loading Bison Dashboard…</div>
 <script>
 /* Bison Dashboard host page (Oct 19, 2026; fast version Oct 19 late; Oct 20: today's business date worked out on the phone,
-   speed meter = add #speed to the address).
+   speed meter = add #speed to the address; Cash also kept on the phone; all tabs pre-loaded after login).
    Talks to the Cloudflare Worker first (fast, keeps ready-made views), and straight to Apps Script (DashApi.gs) only if the
    Worker can't be reached. Login = the dashboard's own Bison Portal login (Portal.gs).
    Speed on the phone: the page itself and the last numbers of Overview / P&L / Inventory / Channel split / Expenses are kept
@@ -32,8 +32,8 @@ function say(t, bad) { const m = document.getElementById('msg'); if (!m) return;
 /* Runs inside the dashboard page: replaces google.script.run with fetch calls (Worker first, Apps Script if it can't be reached). */
 function bisonShim(CFG) {
   var URLS = CFG.api ? [CFG.api, CFG.gas] : [CFG.gas];
-  var SWR = { dashData: 1, finChan: 1, plnData: 1, invdData: 1, expData: 1 };   // shown from the phone first, then refreshed
-  var IDX = 'bswrIdx', MAX = 20;
+  var SWR = { dashData: 1, finChan: 1, plnData: 1, invdData: 1, expData: 1, payData: 1, smxData: 1, cdData: 1, cdEntries: 1 };   // shown from the phone first, then refreshed
+  var IDX = 'bswrIdx', MAX = 40;
   /* ---- speed meter (Oct 20): open the dashboard with #speed at the end of the address to see every call's time ---- */
   var SPEED = /speed/.test(location.hash + location.search), LOG = [];
   function meter(f, ms, src) {
