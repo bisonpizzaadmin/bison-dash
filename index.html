@@ -22,7 +22,10 @@
    Talks to the Cloudflare Worker first (fast, keeps ready-made views), and straight to Apps Script (DashApi.gs) only if the
    Worker can't be reached. Login = the dashboard's own Bison Portal login (Portal.gs).
    Speed on the phone: the page itself and the last numbers of Overview / P&L / Inventory / Channel split / Expenses are kept
-   on this device, shown at once, then refreshed quietly. Logging out clears them. */
+   on this device, shown at once, then refreshed quietly. Logging out clears them.
+   Nov 1, 2026: (1) after any SAVE (clock edit, Staff Map, cash, payroll, expenses, Urgent…) the numbers kept on this phone are
+   dropped, so the next screen waits for fresh numbers instead of showing old ones (e.g. Payroll still showing old hours).
+   (2) While a kept copy is on screen and the fresh one is still coming, a small "⟳ Updating…" chip shows (top left). */
 const API = 'https://bison-dash.bisonpizzaadmin.workers.dev';   // Cloudflare Worker address
 const GAS = 'https://script.google.com/macros/s/AKfycbzjO4KPFIGeaoPxCzNmIa8eRTbg7w_pgRmw6c6ILhVeTBsb31tGDl3J6oo2eZICsbFSBw/exec';   // Apps Script web app (fallback)
 const PAGE_KEY = 'bisonPage';
@@ -34,6 +37,21 @@ function bisonShim(CFG) {
   var URLS = CFG.api ? [CFG.api, CFG.gas] : [CFG.gas];
   var SWR = { dashData: 1, finChan: 1, plnData: 1, invdData: 1, expData: 1, payData: 1, smxData: 1, cdData: 1, cdEntries: 1, anlData: 1 };   // shown from the phone first, then refreshed
   var IDX = 'bswrIdx', MAX = 40;
+  /* Nov 1: page calls that CHANGE data. After one succeeds, every number kept on this phone is dropped. */
+  var SAVE_RE = /(Save|Put|Mark|Void|VoidCash|Delete|Close|Reopen|Rebuild|CountForm|Report)$/;
+  /* Nov 1: "⟳ Updating…" chip while a kept copy is shown and the fresh one is still on its way. */
+  var PENDING = 0;
+  function chip(d) {
+    PENDING = Math.max(0, PENDING + d);
+    var el = document.getElementById('bzUpd');
+    if (!el) {
+      if (!document.body) return;
+      el = document.createElement('div'); el.id = 'bzUpd'; el.textContent = '⟳ Updating…';
+      el.style.cssText = 'position:fixed;top:8px;left:8px;z-index:99;background:rgba(20,10,6,.85);color:#FBF3E9;font:12px/1.4 system-ui,sans-serif;padding:5px 10px;border-radius:999px;pointer-events:none;display:none';
+      document.body.appendChild(el);
+    }
+    el.style.display = PENDING > 0 ? 'block' : 'none';
+  }
   /* ---- speed meter (Oct 20): open the dashboard with #speed at the end of the address to see every call's time ---- */
   var SPEED = /speed/.test(location.hash + location.search), LOG = [];
   function meter(f, ms, src) {
@@ -90,12 +108,12 @@ function bisonShim(CFG) {
         var force = args.length > 0 && args[args.length - 1] === true;
         if (SWR[name]) {
           var k = ck(name, args), c = force ? null : lsGet(k);
-          if (c) { meter(name, 0, 'phone'); try { if (ok) ok(c.r, uo); } catch (e) { console.error(e); } }
-          call(name, args).then(function (r) { lsPut(k, r); if (!c || c.r !== r) { if (ok) ok(r, uo); } },
-            function (e) { if (!c) { if (fail) fail(e, uo); else console.error(e); } });
+          if (c) { meter(name, 0, 'phone'); chip(1); try { if (ok) ok(c.r, uo); } catch (e) { console.error(e); } }
+          call(name, args).then(function (r) { if (c) chip(-1); lsPut(k, r); if (!c || c.r !== r) { if (ok) ok(r, uo); } },
+            function (e) { if (c) chip(-1); if (!c) { if (fail) fail(e, uo); else console.error(e); } });
           return;
         }
-        call(name, args).then(function (r) { if (ok) ok(r, uo); }, function (e) { if (fail) fail(e, uo); else console.error(e); });
+        call(name, args).then(function (r) { if (SAVE_RE.test(name)) lsClear(); if (ok) ok(r, uo); }, function (e) { if (fail) fail(e, uo); else console.error(e); });
       };
     } });
   }
